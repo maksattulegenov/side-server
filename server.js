@@ -37,10 +37,21 @@ let FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
 try {
   let serviceAccount;
   
+  console.log('🔍 DEBUG: Checking for credentials...');
+  console.log('🔍 DEBUG: GOOGLE_SERVICE_ACCOUNT exists:', !!process.env.GOOGLE_SERVICE_ACCOUNT);
+  console.log('🔍 DEBUG: GOOGLE_SERVICE_ACCOUNT length:', process.env.GOOGLE_SERVICE_ACCOUNT ? process.env.GOOGLE_SERVICE_ACCOUNT.length : 0);
+  
   // Try to load from environment variable first (for Railway)
   if (process.env.GOOGLE_SERVICE_ACCOUNT) {
     console.log('📋 Loading credentials from environment variable...');
-    serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
+    try {
+      serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
+      console.log('✅ Successfully parsed JSON from environment variable');
+      console.log('🔍 DEBUG: Service account email:', serviceAccount.client_email);
+    } catch (parseError) {
+      console.error('❌ Error parsing GOOGLE_SERVICE_ACCOUNT JSON:', parseError.message);
+      console.error('🔍 First 100 chars:', process.env.GOOGLE_SERVICE_ACCOUNT.substring(0, 100));
+    }
   } 
   // Fall back to file (for local development)
   else {
@@ -63,9 +74,12 @@ try {
     
     drive = google.drive({ version: 'v3', auth });
     console.log('✅ Google Drive API initialized successfully');
+  } else {
+    console.error('❌ No service account loaded!');
   }
 } catch (error) {
   console.error('❌ Error initializing Google Drive API:', error.message);
+  console.error('Stack trace:', error.stack);
 }
 
 // Function to upload file to Google Drive
