@@ -86,9 +86,16 @@ try {
 async function uploadToGoogleDrive(filePath, fileName, mimeType) {
   try {
     const fileMetadata = {
-      name: fileName,
-      ...(FOLDER_ID && { parents: [FOLDER_ID] })
+      name: fileName
     };
+    
+    // Only add parents if FOLDER_ID is set and looks valid (not a URL)
+    if (FOLDER_ID && !FOLDER_ID.startsWith('http')) {
+      fileMetadata.parents = [FOLDER_ID];
+      console.log(`📁 Uploading to folder: ${FOLDER_ID}`);
+    } else {
+      console.log(`📁 Uploading to Drive root (no folder specified)`);
+    }
 
     const media = {
       mimeType: mimeType,
