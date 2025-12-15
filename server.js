@@ -9,6 +9,12 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// OAuth2 credentials
+const OAUTH_CLIENT_ID = process.env.OAUTH_CLIENT_ID;
+const OAUTH_CLIENT_SECRET = process.env.OAUTH_CLIENT_SECRET;
+const OAUTH_REDIRECT_URI = process.env.OAUTH_REDIRECT_URI || 'http://localhost:3000/oauth2callback';
+const REFRESH_TOKEN = process.env.REFRESH_TOKEN;
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -32,54 +38,70 @@ const upload = multer({
 
 // Google Drive setup
 let drive;
+let oauth2Client;
 let FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
 
 try {
-  let serviceAccount;
+  console.log('🔍 Initializing Google Drive API...');
   
-  console.log('🔍 DEBUG: Checking for credentials...');
-  console.log('🔍 DEBUG: GOOGLE_SERVICE_ACCOUNT exists:', !!process.env.GOOGLE_SERVICE_ACCOUNT);
-  console.log('🔍 DEBUG: GOOGLE_SERVICE_ACCOUNT length:', process.env.GOOGLE_SERVICE_ACCOUNT ? process.env.GOOGLE_SERVICE_ACCOUNT.length : 0);
-  
-  // Try to load from environment variable first (for Railway)
-  if (process.env.GOOGLE_SERVICE_ACCOUNT) {
-    console.log('📋 Loading credentials from environment variable...');
-    try {
-      serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
-      console.log('✅ Successfully parsed JSON from environment variable');
-      console.log('🔍 DEBUG: Service account email:', serviceAccount.client_email);
-    } catch (parseError) {
-      console.error('❌ Error parsing GOOGLE_SERVICE_ACCOUNT JSON:', parseError.message);
-      console.error('🔍 First 100 chars:', process.env.GOOGLE_SERVICE_ACCOUNT.substring(0, 100));
-    }
-  } 
-  // Fall back to file (for local development)
-  else {
-    const serviceAccountPath = path.join(__dirname, 'service-account.json');
+  // Use OAuth2 if credentials are provided
+  if (OAUTH_CLIENT_ID && OAUTH_CLIENT_SECRET) {
+    console.log('📋 Using OAuth2 authentication...');
     
-    if (!fs.existsSync(serviceAccountPath)) {
-      console.error('⚠️ No credentials found!');
-      console.error('Set GOOGLE_SERVICE_ACCOUNT environment variable or create service-account.json');
+    oauth2Client = new google.auth.OAuth2(
+      OAUTH_CLIENT_ID,
+      OAUTH_CLIENT_SECRET,
+      OAUTH_REDIRECT_URI
+    );
+    
+    if (REFRESH_TOKEN) {
+      oauth2Client.setCredentials({
+        refresh_token: REFRESH_TOKEN
+      });
+      drive = google.drive({ version: 'v3', auth: oauth2Client });
+      console.log('✅ Google Drive API initialized with OAuth2');
     } else {
-      console.log('📋 Loading credentials from service-account.json...');
-      serviceAccount = require('./service-account.json');
+      console.log('⚠️ No refresh token found. Visit /auth to authenticate.');
     }
   }
-  
-  if (serviceAccount) {
-    const auth = new google.auth.GoogleAuth({
-      credentials: serviceAccount,
-      scopes: ['https://www.googleapis.com/auth/drive.file']
-    });
+  // Fall back to service account
+  else {
+    console.log('📋 Attempting service account authentication...');
+    let serviceAccount;
     
-    drive = google.drive({ version: 'v3', auth });
-    console.log('✅ Google Drive API initialized successfully');
-  } else {
-    console.error('❌ No service account loaded!');
+    if (process.env.GOOGLE_SERVICE_ACCOUNT) {
+      console.log('📋 Loading credentials from environment variable...');
+      try {
+        serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
+        console.log('✅ Successfully parsed JSON from environment variable');
+        console.log('🔍 Service account email:', serviceAccount.client_email);
+      } catch (parseError) {
+        console.error('❌ Error parsing GOOGLE_SERVICE_ACCOUNT JSON:', parseError.message);
+      }
+    } else {
+      const serviceAccountPath = path.join(__dirname, 'service-account.json');
+      
+      if (fs.existsSync(serviceAccountPath)) {
+        console.log('📋 Loading credentials from service-account.json...');
+        serviceAccount = require('./service-account.json');
+      } else {
+        console.error('⚠️ No credentials found!');
+      }
+    }
+    
+    if (serviceAccount) {
+      const auth = new google.auth.GoogleAuth({
+        credentials: serviceAccount,
+        scopes: ['https://www.googleapis.com/auth/drive.file']
+      });
+      
+      drive = google.drive({ version: 'v3', auth });
+      console.log('✅ Google Drive API initialized with service account');
+      console.log('⚠️ Note: Service accounts require a Shared Drive to upload files');
+    }
   }
 } catch (error) {
   console.error('❌ Error initializing Google Drive API:', error.message);
-  console.error('Stack trace:', error.stack);
 }
 
 // Function to upload file to Google Drive
@@ -121,11 +143,60 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// OAuth routes
+app.get('/auth', (req, res) => {
+  if (!oauth2Client) {
+    return res.status(500).send('OAuth2 not configured. Set OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET environment variables.');
+  }
+  
+  const authUrl = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    scope: ['https://www.googleapis.com/auth/drive.file'],
+    prompt: 'consent'
+  });
+  
+  res.redirect(authUrl);
+});
+
+app.get('/oauth2callback', async (req, res) => {
+  const { code } = req.query;
+  
+  if (!code) {
+    return res.status(400).send('No authorization code provided');
+  }
+  
+  try {
+    const { tokens } = await oauth2Client.getToken(code);
+    
+    res.send(`
+      <html>
+        <head><title>Authentication Successful</title></head>
+        <body style="font-family: Arial; padding: 40px; max-width: 800px; margin: 0 auto;">
+          <h1 style="color: green;">✅ Authentication Successful!</h1>
+          <p>Copy this refresh token and add it to your Railway environment variables:</p>
+          <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
+            <strong>Variable Name:</strong> REFRESH_TOKEN<br><br>
+            <strong>Variable Value:</strong><br>
+            <code style="background: white; padding: 10px; display: block; margin-top: 10px; word-break: break-all;">
+              ${tokens.refresh_token}
+            </code>
+          </div>
+          <p>After adding this to Railway, your server will be able to upload files to your Google Drive!</p>
+          <p><a href="/">← Back to Home</a></p>
+        </body>
+      </html>
+    `);
+  } catch (error) {
+    res.status(500).send('Error during authentication: ' + error.message);
+  }
+});
+
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     message: 'Server is running',
     driveApiReady: !!drive,
+    authMethod: oauth2Client ? 'OAuth2' : 'Service Account',
     timestamp: new Date().toISOString()
   });
 });
